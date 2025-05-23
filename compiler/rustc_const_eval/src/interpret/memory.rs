@@ -167,6 +167,10 @@ impl<'tcx, M: Machine<'tcx>> Memory<'tcx, M> {
     pub fn alloc_map(&self) -> &M::MemoryMap {
         &self.alloc_map
     }
+
+    pub fn alloc_map_mut(&mut self) -> &mut M::MemoryMap {
+        &mut self.alloc_map
+    }
 }
 
 impl<'tcx, M: Machine<'tcx>> InterpCx<'tcx, M> {

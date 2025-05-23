@@ -1,7 +1,6 @@
 #![warn(clippy::arithmetic_side_effects)]
 
 mod aarch64;
-mod alloc;
 mod backtrace;
 mod files;
 #[cfg(unix)]
@@ -11,6 +10,7 @@ mod wasi;
 mod windows;
 mod x86;
 
+pub mod alloc;
 pub mod env;
 pub mod extern_static;
 pub mod foreign_items;
@@ -19,6 +19,8 @@ pub mod os_str;
 pub mod panic;
 pub mod time;
 pub mod tls;
+#[cfg(target_os = "linux")]
+pub mod trace;
 
 pub use self::files::FdTable;
 pub use self::unix::{DirTable, EpollInterestTable};

@@ -168,7 +168,7 @@ trait EvalContextExtPriv<'tcx>: crate::MiriInterpCxExt<'tcx> {
                 AllocKind::Dead => unreachable!(),
             };
             // We don't have to expose this pointer yet, we do that in `prepare_for_native_call`.
-            return interp_ok(base_ptr.addr().try_into().unwrap());
+            return interp_ok(base_ptr.addr().to_u64());
         }
         // We are not in native lib mode, so we control the addresses ourselves.
         if let Some((reuse_addr, clock)) = global_state.reuse.take_addr(
@@ -465,13 +465,63 @@ pub trait EvalContextExt<'tcx>: crate::MiriInterpCxExt<'tcx> {
     /// This overapproximates the modifications which external code might make to memory:
     /// We set all reachable allocations as initialized, mark all reachable provenances as exposed
     /// and overwrite them with `Provenance::WILDCARD`.
-    fn prepare_exposed_for_native_call(&mut self) -> InterpResult<'tcx> {
+    fn prepare_exposed_for_native_call(&mut self, paranoid: bool) -> InterpResult<'tcx> {
         let this = self.eval_context_mut();
         // We need to make a deep copy of this list, but it's fine; it also serves as scratch space
         // for the search within `prepare_for_native_call`.
         let exposed: Vec<AllocId> =
             this.machine.alloc_addresses.get_mut().exposed.iter().copied().collect();
-        this.prepare_for_native_call(exposed, true)
+        this.prepare_for_native_call(exposed, paranoid)
+    }
+
+    /// Makes use of information obtained about memory accesses during FFI to determine which
+    /// provenances should be exposed. Note that if `prepare_exposed_for_native_call` was not
+    /// called before the FFI (with `paranoid` set to false) then some of the writes may be
+    /// lost!
+    #[cfg(target_os = "linux")]
+    fn apply_events(&mut self, events: crate::shims::trace::MemEvents) -> InterpResult<'tcx> {
+        use crate::alloc_bytes::AllocSource;
+        use crate::shims::alloc::EvalContextExt;
+
+        let mut first = false;
+        let this = self.eval_context_mut();
+        let exposed: Vec<AllocId> =
+            this.machine.alloc_addresses.get_mut().exposed.iter().copied().collect();
+        for alloc_raw in events.mappings {
+            eprintln!("{alloc_raw:#018x?}");
+            let kind = if alloc_raw.start.rem_euclid(4096) == 0 && alloc_raw.end.strict_sub(alloc_raw.start) == 4096 {
+                if first {
+                    first = false;
+                    AllocSource::Immortal
+                } else {
+                    AllocSource::Mmap
+                }
+            } else {
+                AllocSource::C
+            };
+            let ptr: *mut u8 = std::ptr::with_exposed_provenance_mut(alloc_raw.start.try_into().unwrap());
+            let size = Size::from_bytes(alloc_raw.end.strict_sub(alloc_raw.start));
+            let align = this.malloc_align(size.bytes());
+            let bytes = unsafe {
+                MiriAllocBytes::foreign(ptr, size, align, kind)
+            };
+            let alloc = Allocation::register_foreign(bytes, size, align);
+            let kind = MemoryKind::Machine(kind.into());
+            // Don't use insert_allocation directly!
+            //let id = this.tcx.reserve_alloc_id();
+            //let extra = MiriMachine::init_local_allocation(this, id, kind, alloc.size(), alloc.align)?;
+            //let alloc = alloc.with_extra(extra);
+            /*let prov = crate::Provenance::Concrete {
+                alloc_id: id,
+                tag: BorTag::default(),
+            };*/
+            //this.expose_provenance(prov)?;
+            //this.memory.alloc_map_mut().insert(id, (kind, alloc));
+            //this.machine.alloc_addresses.borrow_mut().int_to_ptr_map.push((alloc_raw.start, id));
+            let ptr = this.insert_allocation(alloc, kind)?;
+            this.expose_provenance(ptr.provenance)?;
+        }
+        this.apply_accesses(exposed, events.reads, events.writes)
     }
 }
 

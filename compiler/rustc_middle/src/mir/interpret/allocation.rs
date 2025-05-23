@@ -480,6 +480,17 @@ impl<Prov: Provenance, Bytes: AllocBytes> Allocation<Prov, (), Bytes> {
             extra,
         }
     }
+
+    pub fn register_foreign(bytes: Bytes, size: Size, align: Align) -> Self {
+        Allocation {
+            bytes,
+            provenance: ProvenanceMap::new(),
+            init_mask: InitMask::new(size, true),
+            align,
+            mutability: Mutability::Mut,
+            extra: (),
+        }
+    }
 }
 
 impl Allocation {

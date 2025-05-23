@@ -11,6 +11,7 @@
 #![feature(nonzero_ops)]
 #![feature(strict_overflow_ops)]
 #![feature(pointer_is_aligned_to)]
+#![feature(ptr_metadata)]
 #![feature(unqualified_local_imports)]
 #![feature(derive_coerce_pointee)]
 #![feature(arbitrary_self_types)]
@@ -41,14 +42,7 @@
     rustc::potential_query_instability,
     rustc::untranslatable_diagnostic,
 )]
-#![warn(
-    rust_2018_idioms,
-    unqualified_local_imports,
-    clippy::cast_possible_wrap, // unsigned -> signed
-    clippy::cast_sign_loss, // signed -> unsigned
-    clippy::cast_lossless,
-    clippy::cast_possible_truncation,
-)]
+#![warn(rust_2018_idioms, unqualified_local_imports, clippy::as_conversions)]
 // Needed for rustdoc from bootstrap (with `-Znormalize-docs`).
 #![recursion_limit = "256"]
 
@@ -82,6 +76,8 @@ mod borrow_tracker;
 mod clock;
 mod concurrency;
 mod diagnostics;
+#[cfg(target_os = "linux")]
+mod discrete_alloc;
 mod eval;
 mod helpers;
 mod intrinsics;
@@ -102,6 +98,10 @@ pub use rustc_const_eval::interpret::*;
 pub use rustc_const_eval::interpret::{self, AllocMap, Provenance as _};
 use rustc_middle::{bug, span_bug};
 use tracing::{info, trace};
+
+// Let bin/miri.rs kill the supervisor process.
+#[cfg(target_os = "linux")]
+pub use crate::shims::trace::kill_sv;
 
 // Type aliases that set the provenance parameter.
 pub type Pointer = interpret::Pointer<Option<machine::Provenance>>;
@@ -140,7 +140,7 @@ pub use crate::eval::{
     AlignmentCheck, BacktraceStyle, IsolatedOp, MiriConfig, MiriEntryFnType, RejectOpWith,
     ValidationMode, create_ecx, eval_entry,
 };
-pub use crate::helpers::{AccessKind, EvalContextExt as _};
+pub use crate::helpers::{AccessKind, EvalContextExt as _, ToU64 as _, ToUsize as _};
 pub use crate::intrinsics::EvalContextExt as _;
 pub use crate::machine::{
     AllocExtra, DynMachineCallback, FrameExtra, MachineCallback, MemoryKind, MiriInterpCx,

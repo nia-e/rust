@@ -5,6 +5,42 @@ use std::{alloc, slice};
 use rustc_abi::{Align, Size};
 use rustc_middle::mir::interpret::AllocBytes;
 
+#[cfg(target_os = "linux")]
+use crate::discrete_alloc::MachineAlloc;
+use crate::helpers::ToU64 as _;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum AllocSource {
+    Rust,
+    C,
+    Mmap,
+    Immortal,
+}
+
+impl From<AllocSource> for crate::MiriMemoryKind {
+    fn from(value: AllocSource) -> Self {
+        match value {
+            AllocSource::Rust => Self::Rust,
+            AllocSource::C => Self::C,
+            AllocSource::Mmap => Self::Mmap,
+            AllocSource::Immortal => Self::ExternStatic,
+        }
+    }
+}
+
+impl TryFrom<crate::MiriMemoryKind> for AllocSource {
+    type Error = ();
+
+    fn try_from(value: crate::MiriMemoryKind) -> Result<Self, Self::Error> {
+        match value {
+            crate::MiriMemoryKind::Rust => Ok(Self::Rust),
+            crate::MiriMemoryKind::C => Ok(Self::C),
+            crate::MiriMemoryKind::Mmap => Ok(Self::Mmap),
+            _ => Err(())
+        }
+    }
+}
+
 /// Allocation bytes that explicitly handle the layout of the data they're storing.
 /// This is necessary to interface with native code that accesses the program store in Miri.
 #[derive(Debug)]
@@ -16,12 +52,13 @@ pub struct MiriAllocBytes {
     /// * If `self.layout.size() == 0`, then `self.ptr` was allocated with the equivalent layout with size 1.
     /// * Otherwise, `self.ptr` points to memory allocated with `self.layout`.
     ptr: *mut u8,
+    allocated_with: AllocSource,
 }
 
 impl Clone for MiriAllocBytes {
     fn clone(&self) -> Self {
         let bytes: Cow<'_, [u8]> = Cow::Borrowed(self);
-        let align = Align::from_bytes(self.layout.align().try_into().unwrap()).unwrap();
+        let align = Align::from_bytes(self.layout.align().to_u64()).unwrap();
         MiriAllocBytes::from_bytes(bytes, align)
     }
 }
@@ -35,8 +72,28 @@ impl Drop for MiriAllocBytes {
         } else {
             self.layout
         };
+
         // SAFETY: Invariant, `self.ptr` points to memory allocated with `self.layout`.
-        unsafe { alloc::dealloc(self.ptr, alloc_layout) }
+        unsafe {
+            match self.allocated_with {
+                AllocSource::Rust => {
+                    #[cfg(target_os = "linux")]
+                    MachineAlloc::dealloc(self.ptr, alloc_layout);
+                    #[cfg(not(target_os = "linux"))]
+                    alloc::dealloc(self.ptr, alloc_layout);
+                },
+                AllocSource::C => {
+                    libc::free(self.ptr.cast());
+                },
+                AllocSource::Mmap => {
+                    // INVARIANT: mmap allocations are page-sized and page-aligned
+                    let page_size = libc::sysconf(libc::_SC_PAGESIZE).try_into().unwrap();
+                    libc::munmap(self.ptr.cast(), page_size);
+                },
+                AllocSource::Immortal => (),
+            }
+            
+        }
     }
 }
 
@@ -78,7 +135,22 @@ impl MiriAllocBytes {
             Err(())
         } else {
             // SAFETY: All `MiriAllocBytes` invariants are fulfilled.
-            Ok(Self { ptr, layout })
+            Ok(Self { ptr, layout, allocated_with: AllocSource::Rust })
+        }
+    }
+
+    /// Registers a `MiriAllocBytes` which was allocated with an allocator other than Miri's
+    /// `MachineAlloc`.
+    /// 
+    /// # Safety
+    /// The pointer referenced must have been allocated by the mechanism specified in
+    /// `allocated_with`, which must not be `Rust`.
+    pub unsafe fn foreign(ptr: *mut u8, size: Size, align: Align, allocated_with: AllocSource) -> Self {
+        assert_ne!(allocated_with, AllocSource::Rust);
+        Self {
+            layout: Layout::from_size_align(size.bytes_usize(), align.bytes_usize()).unwrap(),
+            ptr,
+            allocated_with,
         }
     }
 }
@@ -89,8 +161,17 @@ impl AllocBytes for MiriAllocBytes {
         let size = slice.len();
         let align = align.bytes();
         // SAFETY: `alloc_fn` will only be used with `size != 0`.
-        let alloc_fn = |layout| unsafe { alloc::alloc(layout) };
-        let alloc_bytes = MiriAllocBytes::alloc_with(size.try_into().unwrap(), align, alloc_fn)
+        let alloc_fn = |layout| unsafe {
+            #[cfg(target_os = "linux")]
+            {
+                MachineAlloc::alloc(layout)
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                alloc::alloc(layout)
+            }
+        };
+        let alloc_bytes = MiriAllocBytes::alloc_with(size.to_u64(), align, alloc_fn)
             .unwrap_or_else(|()| {
                 panic!("Miri ran out of memory: cannot create allocation of {size} bytes")
             });
@@ -104,7 +185,16 @@ impl AllocBytes for MiriAllocBytes {
         let size = size.bytes();
         let align = align.bytes();
         // SAFETY: `alloc_fn` will only be used with `size != 0`.
-        let alloc_fn = |layout| unsafe { alloc::alloc_zeroed(layout) };
+        let alloc_fn = |layout| unsafe {
+            #[cfg(target_os = "linux")]
+            {
+                MachineAlloc::alloc_zeroed(layout)
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                alloc::alloc_zeroed(layout)
+            }
+        };
         MiriAllocBytes::alloc_with(size, align, alloc_fn).ok()
     }
 
