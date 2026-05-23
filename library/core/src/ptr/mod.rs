@@ -23,8 +23,8 @@
 //!   [allocation] it is derived from; a pointer is dereferenceable if the memory range of the given
 //!   size starting at the pointer is entirely contained within the bounds of that allocation. Note
 //!   that in Rust, every (stack-allocated) variable is considered a separate allocation.
-//! * All accesses performed by functions in this module are *non-atomic* in the sense
-//!   of [atomic operations] used to synchronize between threads. This means it is
+//! * All non-volatile accesses performed by functions in this module are also *non-atomic* in the
+//!   sense of [atomic operations] used to synchronize between threads. This means it is
 //!   undefined behavior to perform two concurrent accesses to the same location from different
 //!   threads unless both accesses only read from memory.
 //! * The result of casting a reference to a pointer is valid for reads/writes for as long as the
@@ -2046,8 +2046,8 @@ pub const unsafe fn write_unaligned<T>(dst: *mut T, src: T) {
 ///   of such a read are well-defined by the target hardware. The provenance of the pointer is
 ///   irrelevant, and it can be created with [`without_provenance`]. The access must not trap. It
 ///   can cause side-effects, but those must not affect Rust-allocated memory in any way. This
-///   access is still not considered [atomic], and as such it cannot be used for inter-thread
-///   synchronization.
+///   access is only considered atomic if T is one of the atomic types, in which case the access is
+///   performed with relaxed ordering.
 ///
 /// Note that volatile memory operations where T is a zero-sized type are noops and may be ignored.
 ///
@@ -2133,8 +2133,8 @@ pub unsafe fn read_volatile<T>(src: *const T) -> T {
 ///   of such a write are well-defined by the target hardware. The provenance of the pointer is
 ///   irrelevant, and it can be created with [`without_provenance`]. The access must not trap. It
 ///   can cause side-effects, but those must not affect Rust-allocated memory in any way. This
-///   access is still not considered [atomic], and as such it cannot be used for inter-thread
-///   synchronization.
+///   access is only considered atomic if T is one of the atomic types, in which case the access is
+///   performed with relaxed ordering.
 ///
 /// Note that volatile memory operations on zero-sized types (e.g., if a zero-sized type is passed
 /// to `write_volatile`) are noops and may be ignored.
